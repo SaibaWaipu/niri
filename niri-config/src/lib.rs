@@ -1882,6 +1882,7 @@ mod tests {
                     off: false,
                     hide_when_single_tab: false,
                     place_within_column: false,
+                    show_titles: false,
                     gap: 5.0,
                     width: 10.0,
                     length: TabIndicatorLength {
