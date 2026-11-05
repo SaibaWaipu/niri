@@ -1901,6 +1901,47 @@ impl<W: LayoutElement> Workspace<W> {
         self.scrolling.insert_position(pos)
     }
 
+    pub(super) fn scrolling_tab_drop_position(
+        &self,
+        pos: Point<f64, Logical>,
+        scale: f64,
+        exclude: &W::Id,
+    ) -> Option<InsertPosition> {
+        // Merging into floating windows is not supported.
+        if self.is_floating_visible() {
+            let over_floating =
+                self.floating
+                    .tiles_with_render_positions()
+                    .any(|(tile, tile_pos)| {
+                        let rect = Rectangle::new(tile_pos, tile.animated_tile_size());
+                        rect.contains(pos)
+                    });
+            if over_floating {
+                return None;
+            }
+        }
+
+        self.scrolling.tab_drop_position(pos, scale, exclude)
+    }
+
+    pub fn merge_window_into_tabbed_column(
+        &mut self,
+        window: &W::Id,
+        target_column_idx: usize,
+    ) -> bool {
+        self.scrolling
+            .merge_window_into_tabbed_column(window, target_column_idx)
+    }
+
+    pub fn split_window_into_new_column(&mut self, window: &W::Id, insert_idx: usize) -> bool {
+        self.scrolling
+            .split_window_into_new_column(window, insert_idx)
+    }
+
+    pub fn tab_indicator_window_at(&self, pos: Point<f64, Logical>, scale: f64) -> Option<W::Id> {
+        self.scrolling.tab_indicator_window_at(pos, scale)
+    }
+
     pub(super) fn insert_hint_area(
         &self,
         position: InsertPosition,

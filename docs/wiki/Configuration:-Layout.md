@@ -455,6 +455,18 @@ By default, the tab indicator has length equal to half of the window size, or `l
 `position` sets the position of the tab indicator relative to the window.
 It can be `left`, `right`, `top`, or `bottom`.
 
+Set `show-titles` to draw the window title on the tab indicator.
+Titles come from the window title, which is usually set by the windowing system to the application name or the window title.
+The text color is picked automatically (black or white) to stay readable against the tab background.
+
+```kdl
+layout {
+    tab-indicator {
+        show-titles
+    }
+}
+```
+
 `gaps-between-tabs` controls the gap between individual tabs in logical pixels.
 
 `corner-radius` sets the rounded corner radius for tabs in the indicator in logical pixels.

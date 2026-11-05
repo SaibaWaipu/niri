@@ -184,6 +184,7 @@ use crate::ui::hotkey_overlay::HotkeyOverlay;
 use crate::ui::mru::{MruCloseRequest, WindowMruUi, WindowMruUiRenderElement};
 use crate::ui::screen_transition::{self, ScreenTransition};
 use crate::ui::screenshot_ui::{OutputScreenshot, ScreenshotUi, ScreenshotUiRenderElement};
+use crate::ui::tab_drag::TabDragUi;
 use crate::utils::scale::{closest_representable_scale, guess_monitor_scale};
 use crate::utils::spawning::{CHILD_DISPLAY, CHILD_ENV};
 use crate::utils::vblank_throttle::VBlankThrottle;
@@ -445,6 +446,7 @@ pub struct Niri {
     pub screenshot_ui: ScreenshotUi,
     pub config_error_notification: ConfigErrorNotification,
     pub hotkey_overlay: HotkeyOverlay,
+    pub tab_drag_ui: TabDragUi,
     pub exit_confirm_dialog: ExitConfirmDialog,
 
     pub window_mru_ui: WindowMruUi,
@@ -2896,6 +2898,7 @@ impl Niri {
             screenshot_ui,
             config_error_notification,
             hotkey_overlay,
+            tab_drag_ui: TabDragUi::new(),
             exit_confirm_dialog,
 
             window_mru_ui,
@@ -4590,6 +4593,22 @@ impl Niri {
         // Draw the hotkey overlay on top.
         if let Some(element) = self.hotkey_overlay.render(ctx.renderer, output) {
             push(element.into());
+        }
+
+        // Draw the tab drag chip on top.
+        if let Some(drag) = self.layout.tab_drag() {
+            if &drag.output == output {
+                let title = self
+                    .layout
+                    .window_by_id(&drag.window)
+                    .and_then(|win| win.title());
+                if let Some(element) =
+                    self.tab_drag_ui
+                        .render(ctx.renderer, output, drag, title.as_deref())
+                {
+                    push(element.into());
+                }
+            }
         }
 
         // Then, the Alt-Tab switcher.

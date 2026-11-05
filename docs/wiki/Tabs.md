@@ -26,6 +26,15 @@ You can click on the indicator to switch tabs.
 
 See the [`tab-indicator` section in the layout section](./Configuration:-Layout.md#tab-indicator) to configure it.
 
+### Tab dragging
+
+You can drag tabs between columns:
+
+- Drag a tab onto another tabbed column to merge that window into the target column as a tab.
+- Drag a tab onto an empty area of the workspace to expel the window into a new column.
+
+Dragging a window that is currently in a tabbed column onto another window in a tabbed column merges the two.
+
 By default, the indicator draws "outside" the column, so it can overlay other windows or go off-screen.
 The `place-within-column` flag puts the indicator "inside" the column, adjusting the window size to make space for it.
 This is especially useful for thicker tab indicators, or when you have very small gaps.

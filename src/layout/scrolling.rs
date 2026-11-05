@@ -2561,6 +2561,22 @@ impl<W: LayoutElement> ScrollingSpace<W> {
                 let loc = Point::from((self.column_x(column_index) + origin_x, y));
                 Rectangle::new(loc, size)
             }
+            InsertPosition::Tab(column_index) => {
+                if column_index >= self.columns.len() {
+                    error!("insert hint column index is out of range");
+                    return None;
+                }
+
+                let size = Size::from((
+                    self.data[column_index].width,
+                    self.working_area.size.h - self.options.layout.gaps * 2.,
+                ));
+                let loc = Point::from((
+                    self.column_x(column_index),
+                    self.working_area.loc.y + self.options.layout.gaps,
+                ));
+                Rectangle::new(loc, size)
+            }
             InsertPosition::Floating => return None,
         };
 
@@ -3067,6 +3083,165 @@ impl<W: LayoutElement> ScrollingSpace<W> {
         }
 
         None
+    }
+
+    /// Returns the column and tab index of the tab under the given point, if any.
+    ///
+    /// Position is relative to the workspace view, same as in `window_under`.
+    fn tab_indicator_hit(&self, pos: Point<f64, Logical>, scale: f64) -> Option<(usize, usize)> {
+        let view_pos = self.view_pos();
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            if col.display_mode != ColumnDisplay::Tabbed || !col.sizing_mode().is_normal() {
+                continue;
+            }
+            let col_pos =
+                Point::from((self.column_x(col_idx) - view_pos, 0.)) + col.render_offset();
+            let col_pos = col_pos.to_physical_precise_round(scale).to_logical(scale);
+            if let Some(tab_idx) = col.tab_indicator.hit(
+                col.tab_indicator_area(),
+                col.tiles.len(),
+                scale,
+                pos - col_pos,
+            ) {
+                return Some((col_idx, tab_idx));
+            }
+        }
+        None
+    }
+
+    /// Returns the window of the tab under the given point, if any.
+    ///
+    /// Position is relative to the workspace view, same as in `window_under`.
+    pub fn tab_indicator_window_at(&self, pos: Point<f64, Logical>, scale: f64) -> Option<W::Id> {
+        let (col_idx, tab_idx) = self.tab_indicator_hit(pos, scale)?;
+        Some(self.columns[col_idx].tiles[tab_idx].window().id().clone())
+    }
+
+    /// Computes the drop position for the window being tab-dragged.
+    ///
+    /// Returns `InsertPosition::Tab(column)` when the point is over a column (or its tab
+    /// indicator) to merge into as a tab, or `InsertPosition::NewColumn(index)` to expel the
+    /// window into a new column at the given index.
+    ///
+    /// Position is relative to the workspace view, same as in `window_under`.
+    pub(super) fn tab_drop_position(
+        &self,
+        pos: Point<f64, Logical>,
+        scale: f64,
+        exclude: &W::Id,
+    ) -> Option<InsertPosition> {
+        let view_pos = self.view_pos();
+        let exclude_idx = self.columns.iter().position(|col| col.contains(exclude));
+
+        if let Some((col_idx, _)) = self.tab_indicator_hit(pos, scale) {
+            if Some(col_idx) != exclude_idx {
+                return Some(InsertPosition::Tab(col_idx));
+            }
+        }
+
+        // Otherwise, see if we're over a column's body. Dropping there merges into that column
+        // as a tab, the same as dropping on a window in Haiku.
+        for (col_idx, col) in self.columns.iter().enumerate() {
+            if Some(col_idx) == exclude_idx {
+                continue;
+            }
+            let col_pos =
+                Point::from((self.column_x(col_idx) - view_pos, 0.)) + col.render_offset();
+            for (tile, tile_off, _) in col.tiles_in_render_order() {
+                let tile_pos = (col_pos + tile_off + tile.render_offset())
+                    .to_physical_precise_round(scale)
+                    .to_logical(scale);
+                let rect = Rectangle::new(tile_pos, tile.animated_tile_size());
+                if rect.contains(pos) {
+                    return Some(InsertPosition::Tab(col_idx));
+                }
+            }
+        }
+
+        // Not over a column: insert a new column at the pointer.
+        let mut index = 0;
+        for (col_idx, _) in self.columns.iter().enumerate() {
+            let x = self.column_x(col_idx) - view_pos;
+            let width = self.data[col_idx].width;
+            if x + width / 2. < pos.x {
+                index += 1;
+            }
+        }
+
+        Some(InsertPosition::NewColumn(index))
+    }
+
+    /// Moves the window into the given column, creating its tabbed display if needed.
+    pub fn merge_window_into_tabbed_column(
+        &mut self,
+        window: &W::Id,
+        target_column_idx: usize,
+    ) -> bool {
+        let Some((source_col_idx, source_tile_idx)) =
+            self.columns.iter().enumerate().find_map(|(col_idx, col)| {
+                col.position(window).map(|tile_idx| (col_idx, tile_idx))
+            })
+        else {
+            return false;
+        };
+
+        if source_col_idx == target_column_idx {
+            return false;
+        }
+
+        let anim = Some(self.options.animations.window_movement.0);
+        let RemovedTile { tile, .. } =
+            self.remove_tile_by_idx(source_col_idx, source_tile_idx, Transaction::new(), anim);
+
+        // Removing the source column shifts the target index if the source came first.
+        let target_column_idx = if source_col_idx < target_column_idx {
+            target_column_idx - 1
+        } else {
+            target_column_idx
+        };
+
+        self.add_tile_to_column(target_column_idx, None, tile, true);
+
+        // add_tile_to_column() activated the target column; switch it to tabbed display.
+        self.set_column_display(ColumnDisplay::Tabbed);
+        true
+    }
+
+    /// Expels the window from its column into a new column at the given index.
+    pub(super) fn split_window_into_new_column(
+        &mut self,
+        window: &W::Id,
+        insert_idx: usize,
+    ) -> bool {
+        let Some((source_col_idx, source_tile_idx)) =
+            self.columns.iter().enumerate().find_map(|(col_idx, col)| {
+                col.position(window).map(|tile_idx| (col_idx, tile_idx))
+            })
+        else {
+            return false;
+        };
+
+        if self.columns[source_col_idx].tiles.len() == 1 {
+            // The window is already its own column.
+            return false;
+        }
+
+        let anim = Some(self.options.animations.window_movement.0);
+        let RemovedTile {
+            tile,
+            width,
+            is_full_width,
+            ..
+        } = self.remove_tile_by_idx(source_col_idx, source_tile_idx, Transaction::new(), anim);
+
+        let insert_idx = if source_col_idx < insert_idx {
+            insert_idx - 1
+        } else {
+            insert_idx
+        };
+
+        self.add_tile(Some(insert_idx), tile, true, width, is_full_width, anim);
+        true
     }
 
     pub fn view_offset_gesture_begin(&mut self, is_touchpad: bool) {

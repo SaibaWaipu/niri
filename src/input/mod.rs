@@ -48,6 +48,7 @@ use self::pick_color_grab::PickColorGrab;
 use self::pick_window_grab::PickWindowGrab;
 use self::resize_grab::ResizeGrab;
 use self::spatial_movement_grab::SpatialMovementGrab;
+use self::tab_drag_grab::TabDragGrab;
 #[cfg(feature = "dbus")]
 use crate::dbus::freedesktop_a11y::KbMonBlock;
 use crate::layout::scrolling::ScrollDirection;
@@ -68,6 +69,7 @@ pub mod scroll_swipe_gesture;
 pub mod scroll_tracker;
 pub mod spatial_movement_grab;
 pub mod swipe_tracker;
+pub mod tab_drag_grab;
 pub mod touch_overview_grab;
 
 use backend_ext::{NiriInputBackend as InputBackend, NiriInputDevice as _};
@@ -3174,6 +3176,30 @@ impl State {
                     // Don't activate the window under the cursor to avoid unnecessary
                     // scrolling when e.g. Mod+MMB clicking on a partially off-screen window.
                     return;
+                }
+            }
+
+            // Start a tab drag when pressing on a tab indicator.
+            if button == Some(MouseButton::Left)
+                && !pointer.is_grabbed()
+                && !mod_down
+                && !is_overview_open
+            {
+                let location = pointer.current_location();
+                if let Some((output, pos_within_output)) = self.niri.output_under(location) {
+                    if let Some(window) = self
+                        .niri
+                        .layout
+                        .tab_indicator_window_at(output, pos_within_output)
+                    {
+                        let start_data = PointerGrabStartData {
+                            focus: None,
+                            button: button_code,
+                            location,
+                        };
+                        let grab = TabDragGrab::new(start_data, output, pos_within_output, window);
+                        pointer.set_grab(self, grab, serial, Focus::Clear);
+                    }
                 }
             }
 

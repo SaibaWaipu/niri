@@ -460,6 +460,7 @@ pub struct TabIndicator {
     pub off: bool,
     pub hide_when_single_tab: bool,
     pub place_within_column: bool,
+    pub show_titles: bool,
     pub gap: f64,
     pub width: f64,
     pub length: TabIndicatorLength,
@@ -480,6 +481,7 @@ impl Default for TabIndicator {
             off: false,
             hide_when_single_tab: false,
             place_within_column: false,
+            show_titles: false,
             gap: 5.,
             width: 4.,
             length: TabIndicatorLength {
@@ -509,6 +511,7 @@ impl MergeWith<TabIndicatorPart> for TabIndicator {
             (self, part),
             hide_when_single_tab,
             place_within_column,
+            show_titles,
             gap,
             width,
             gaps_between_tabs,
@@ -536,6 +539,8 @@ pub struct TabIndicatorPart {
     pub hide_when_single_tab: Option<Flag>,
     #[knuffel(child)]
     pub place_within_column: Option<Flag>,
+    #[knuffel(child)]
+    pub show_titles: Option<Flag>,
     #[knuffel(child, unwrap(argument))]
     pub gap: Option<FloatOrInt<-65535, 65535>>,
     #[knuffel(child, unwrap(argument))]

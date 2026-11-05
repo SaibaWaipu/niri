@@ -128,10 +128,12 @@ pub struct WorkspaceSwitchGesture {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum InsertPosition {
+pub(crate) enum InsertPosition {
     NewColumn(usize),
     InColumn(usize, usize),
     Floating,
+    /// Merge into the given column, presenting the window as a tab.
+    Tab(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1565,6 +1567,20 @@ impl<W: LayoutElement> Monitor<W> {
     ) -> Option<&Workspace<W>> {
         self.workspaces_with_render_geo()
             .find_map(|(ws, geo)| geo.contains(pos_within_output).then_some(ws))
+    }
+
+    /// Returns the window of the tab under the given point, if any.
+    ///
+    /// Position is relative to the output.
+    pub fn tab_indicator_window_at(&self, pos_within_output: Point<f64, Logical>) -> Option<W::Id> {
+        let (ws, geo) = self.workspace_under(pos_within_output)?;
+        let scale = ws.scale().fractional_scale();
+        let pos_within_workspace = if self.overview_progress.is_some() {
+            (pos_within_output - geo.loc).downscale(self.overview_zoom())
+        } else {
+            pos_within_output - geo.loc
+        };
+        ws.tab_indicator_window_at(pos_within_workspace, scale)
     }
 
     pub fn window_under(&self, pos_within_output: Point<f64, Logical>) -> Option<(&W, HitType)> {

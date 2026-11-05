@@ -982,6 +982,10 @@ impl LayoutElement for Mapped {
         self.is_urgent
     }
 
+    fn title(&self) -> Option<String> {
+        with_toplevel_role(self.toplevel(), |role| role.title.clone())
+    }
+
     fn set_activated(&mut self, active: bool) {
         let changed = self.toplevel().with_pending_state(|state| {
             if active {

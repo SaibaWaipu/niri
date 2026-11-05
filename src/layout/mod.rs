@@ -244,7 +244,13 @@ pub trait LayoutElement {
     fn set_bounds(&self, bounds: Size<i32, Logical>);
     fn is_ignoring_opacity_window_rule(&self) -> bool;
 
+    /// Checks whether the element is urgent.
     fn is_urgent(&self) -> bool;
+
+    /// Returns the element's window title, if any.
+    fn title(&self) -> Option<String> {
+        None
+    }
 
     fn configure_intent(&self) -> ConfigureIntent;
     fn send_pending_configure(&mut self);
@@ -358,6 +364,10 @@ pub struct Layout<W: LayoutElement> {
     last_active_workspace_id: HashMap<String, WorkspaceId>,
     /// Ongoing interactive move.
     interactive_move: Option<InteractiveMoveState<W>>,
+    /// Ongoing tab drag.
+    ///
+    /// The user pressed a tab and dragged it far enough to start reordering/merging tabs.
+    tab_drag: Option<TabDrag<W>>,
     /// Ongoing drag-and-drop operation.
     dnd: Option<DndData<W>>,
     /// Clock for driving animations.
@@ -452,6 +462,22 @@ struct InteractiveMoveData<W: LayoutElement> {
     /// config overrides for the workspace where the move originated from. As soon as the window
     /// moves over some different workspace though, this override will reset.
     pub(self) workspace_config: Option<(WorkspaceId, niri_config::LayoutPart)>,
+}
+
+/// Ongoing tab drag.
+///
+/// The window stays in its column while the drag is in progress; the drop position is
+/// computed from the pointer position on release.
+#[derive(Debug)]
+pub struct TabDrag<W: LayoutElement> {
+    /// The window being dragged.
+    pub window: W::Id,
+    /// The output where the drag started.
+    ///
+    /// The drag is cancelled when the pointer leaves this output.
+    pub output: Output,
+    /// Current pointer position within the output, or `None` when the pointer is outside it.
+    pub pos_within_output: Option<Point<f64, Logical>>,
 }
 
 #[derive(Debug)]
@@ -723,6 +749,7 @@ impl<W: LayoutElement> Layout<W> {
             is_active: true,
             last_active_workspace_id: HashMap::new(),
             interactive_move: None,
+            tab_drag: None,
             dnd: None,
             clock,
             update_render_elements_time: Duration::ZERO,
@@ -748,6 +775,7 @@ impl<W: LayoutElement> Layout<W> {
             is_active: true,
             last_active_workspace_id: HashMap::new(),
             interactive_move: None,
+            tab_drag: None,
             dnd: None,
             clock,
             update_render_elements_time: Duration::ZERO,
@@ -2888,6 +2916,21 @@ impl<W: LayoutElement> Layout<W> {
             mon.insert_hint = None;
         }
 
+        if self.tab_drag.is_some() {
+            // Recompute the insert hint from the tab drag.
+            if let Some((output, position, ws_id)) = self.tab_drag_drop_position() {
+                let Some(mon) = self.monitor_for_output_mut(&output) else {
+                    return;
+                };
+                mon.insert_hint = Some(InsertHint {
+                    workspace: InsertWorkspace::Existing(ws_id),
+                    position,
+                    corner_radius: CornerRadius::default(),
+                });
+            }
+            return;
+        }
+
         if !matches!(self.interactive_move, Some(InteractiveMoveState::Moving(_))) {
             return;
         }
@@ -3897,6 +3940,136 @@ impl<W: LayoutElement> Layout<W> {
         true
     }
 
+    /// Starts a tab drag for the given window.
+    ///
+    /// The window stays in its column for the duration of the drag. Returns `false` when the
+    /// window can not be dragged.
+    pub fn tab_drag_begin(
+        &mut self,
+        window_id: W::Id,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> bool {
+        if self.tab_drag.is_some() || self.interactive_move.is_some() {
+            return false;
+        }
+
+        let Some((mon, _)) = self.monitors().find_map(|mon| {
+            mon.workspaces_with_render_geo()
+                .find(|(ws, _)| ws.has_window(&window_id))
+                .map(|rv| (mon, rv))
+        }) else {
+            return false;
+        };
+
+        if mon.output() != output {
+            return false;
+        }
+
+        self.tab_drag = Some(TabDrag {
+            window: window_id,
+            output: output.clone(),
+            pos_within_output: Some(pos_within_output),
+        });
+        true
+    }
+
+    /// Updates the pointer position for the ongoing tab drag.
+    /// Updates the pointer position for the ongoing tab drag.
+    ///
+    /// `at` is the output and position of the pointer, or `None` when the pointer is not over
+    /// any output.
+    pub fn tab_drag_update(&mut self, at: Option<(&Output, Point<f64, Logical>)>) {
+        {
+            let Some(drag) = &mut self.tab_drag else {
+                return;
+            };
+
+            drag.pos_within_output = match at {
+                Some((output, pos)) if output == &drag.output => Some(pos),
+                _ => None,
+            };
+        }
+
+        // Recompute the insert hint.
+        self.update_insert_hint(None);
+    }
+
+    /// Returns the window of the tab under the given point, if any.
+    ///
+    /// Position is relative to the output.
+    pub fn tab_indicator_window_at(
+        &self,
+        output: &Output,
+        pos_within_output: Point<f64, Logical>,
+    ) -> Option<W::Id> {
+        self.monitor_for_output(output)?
+            .tab_indicator_window_at(pos_within_output)
+    }
+
+    /// Returns a reference to the ongoing tab drag, if any.
+    pub fn tab_drag(&self) -> Option<&TabDrag<W>> {
+        self.tab_drag.as_ref()
+    }
+
+    /// Finishes the tab drag, applying the drop action if any.
+    pub fn tab_drag_end(&mut self) {
+        let position = self.tab_drag_drop_position();
+        let drag = self.tab_drag.take();
+
+        for mon in self.monitors_mut() {
+            mon.insert_hint = None;
+        }
+
+        let (Some((_, position, _)), Some(drag)) = (position, drag) else {
+            return;
+        };
+
+        let window = drag.window;
+        for ws in self.workspaces_mut() {
+            if !ws.has_window(&window) {
+                continue;
+            }
+            match position {
+                InsertPosition::Tab(idx) => {
+                    ws.merge_window_into_tabbed_column(&window, idx);
+                }
+                InsertPosition::NewColumn(idx) => {
+                    ws.split_window_into_new_column(&window, idx);
+                }
+                InsertPosition::InColumn(..) | InsertPosition::Floating => (),
+            }
+            break;
+        }
+    }
+
+    /// Cancels the tab drag without applying any drop action.
+    pub fn tab_drag_cancel(&mut self) {
+        self.tab_drag = None;
+        for mon in self.monitors_mut() {
+            mon.insert_hint = None;
+        }
+    }
+
+    /// Computes the drop position for the ongoing tab drag.
+    ///
+    /// Returns the output, drop position and the id of the workspace containing the dragged
+    /// window.
+    fn tab_drag_drop_position(&self) -> Option<(Output, InsertPosition, WorkspaceId)> {
+        let drag = self.tab_drag.as_ref()?;
+        let pos = drag.pos_within_output?;
+        let mon = self.monitor_for_output(&drag.output)?;
+        let (ws, geo) = mon.workspace_under(pos)?;
+        if !ws.has_window(&drag.window) {
+            return None;
+        }
+        let scale = ws.scale().fractional_scale();
+        let zoom = mon.overview_zoom();
+        let pos_ws = (pos - geo.loc).downscale(zoom);
+        let position = ws.scrolling_tab_drop_position(pos_ws, scale, &drag.window)?;
+        Some((drag.output.clone(), position, ws.id()))
+    }
+
     pub fn interactive_move_update(
         &mut self,
         window: &W::Id,
@@ -4344,6 +4517,9 @@ impl<W: LayoutElement> Layout<W> {
                             true,
                             None,
                         );
+                    }
+                    InsertPosition::Tab(_) => {
+                        // Interactive moves do not merge windows into tabs.
                     }
                 }
 
@@ -5030,6 +5206,13 @@ impl<W: LayoutElement> Layout<W> {
 
     pub fn has_window(&self, window: &W::Id) -> bool {
         self.windows().any(|(_, win)| win.id() == window)
+    }
+
+    /// Returns the window with the given id, if any.
+    pub fn window_by_id(&self, window: &W::Id) -> Option<&W> {
+        self.windows()
+            .find(|(_, win)| win.id() == window)
+            .map(|(_, win)| win)
     }
 
     pub fn is_overview_open(&self) -> bool {
